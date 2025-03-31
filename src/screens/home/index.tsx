@@ -157,7 +157,7 @@ export default function DrawingCanvas() {
     
         try {
             // Step 1: Upload image
-            const uploadResponse = await fetch("https://backend-ai-nsep-git-main-nandiniraygithubs-projects.vercel.app", {
+            const uploadResponse = await fetch("https://backend-ai-nsep-git-main-nandiniraygithubs-projects.vercel.app/Image", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ image: dataUrl, dictOfVars: {} })
@@ -172,7 +172,7 @@ export default function DrawingCanvas() {
             console.log("✅ Image stored with ID:", imageId);
     
             // Step 2: Analyze stored image
-            const analyzeResponse = await fetch("https://backend-ai-nsep-git-main-nandiniraygithubs-projects.vercel.app", {
+            const analyzeResponse = await fetch("https://backend-ai-nsep-git-main-nandiniraygithubs-projects.vercel.app/calculate", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ imageId })

@@ -156,9 +156,9 @@ export default function DrawingCanvas() {
         console.log("📤 Sending canvas image to server...");
         const dataUrl = canvas.toDataURL("image/png");
     
-        try {
+        try {  // cors ka issue hai be
             // Step 1: Upload image
-            const uploadResponse = await fetch("https://backend-ai-nsep-a1xm29ut6-nandiniraygithubs-projects.vercel.app/image", {
+            const uploadResponse = await fetch("https://backend-cal.vercel.app/image", {
                 method: "POST",
                 mode: "cors",
                 headers: { "Content-Type": "application/json" },
@@ -174,7 +174,7 @@ export default function DrawingCanvas() {
             console.log("✅ Image stored with ID:", imageId);
     
             // Step 2: Analyze stored image
-            const analyzeResponse = await fetch("https://backend-ai-nsep-git-main-nandiniraygithubs-projects.vercel.app/calculate", {
+            const analyzeResponse = await fetch("https://backend-cal.vercel.app/calculate", {
                 method: "POST",
                 mode: "cors",
                 headers: { "Content-Type": "application/json" },

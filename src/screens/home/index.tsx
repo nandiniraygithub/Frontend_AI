@@ -10,6 +10,7 @@ import { Pencil, Eraser, Undo, Redo, Trash2, Calculator, RefreshCcw } from 'luci
 
 
 
+
 export default function DrawingCanvas() {
     const canvasRef = useRef<HTMLCanvasElement>(null);
     const [isDrawing, setIsDrawing] = useState(false);
@@ -157,7 +158,7 @@ export default function DrawingCanvas() {
     
         try {
             // Step 1: Upload image
-            const uploadResponse = await fetch("https://backend-ai-nsep-git-main-nandiniraygithubs-projects.vercel.app/Image", {
+            const uploadResponse = await fetch("https://backend-ai-nsep-a1xm29ut6-nandiniraygithubs-projects.vercel.app/image", {
                 method: "POST",
                 mode: "cors",
                 headers: { "Content-Type": "application/json" },

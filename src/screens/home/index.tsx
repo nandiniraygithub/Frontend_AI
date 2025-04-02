@@ -1,51 +1,74 @@
-
-
 import React, { useRef, useState, useEffect, useCallback } from 'react';
 import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { Pencil, Eraser, Undo, Redo, Trash2, Calculator, RefreshCcw } from 'lucide-react';
 
-
-
-
-
 export default function DrawingCanvas() {
     const canvasRef = useRef<HTMLCanvasElement>(null);
+    const containerRef = useRef<HTMLDivElement>(null);
     const [isDrawing, setIsDrawing] = useState(false);
-    const [tool, setTool] = useState<'pencil' | 'eraser'>('pencil');
+    const [tool, setTool] = useState<'pencil' | 'eraser'| 'default'>('pencil');
     const [color, setColor] = useState('#000000');
     const [brushSize, setBrushSize] = useState(5);
   
-    
     // Canvas history for undo/redo
     const [history, setHistory] = useState<string[]>([]);
     const [historyIndex, setHistoryIndex] = useState(-1);
 
+    // Handle window resize
     useEffect(() => {
-        initializeCanvas();
-         // Your function to set up the canvas
-    
+        const handleResize = () => {
+            initializeCanvas();
+        };
+
+        window.addEventListener('resize', handleResize);
+        return () => {
+            window.removeEventListener('resize', handleResize);
+        };
     }, []);
 
-
-
+    // Initialize canvas on mount
+    useEffect(() => {
+        initializeCanvas();
+    }, []);
 
     const initializeCanvas = () => {
         const canvas = canvasRef.current;
-        if (canvas) {
+        const container = containerRef.current;
+        
+        if (canvas && container) {
             const context = canvas.getContext('2d');
             if (context) {
-                canvas.width = window.innerWidth;
-                canvas.height = window.innerHeight - 100;
+                // Save the current drawing if any
+                let currentDrawing: string | null = null;
+                if (canvas.width > 0 && canvas.height > 0) {
+                    currentDrawing = canvas.toDataURL();
+                }
+                
+                // Set canvas size to fill container
+                canvas.width = container.clientWidth;
+                canvas.height = window.innerHeight - 100; // Leave space for the toolbar
+                
+                // Fill with white background
                 context.fillStyle = 'white';
                 context.fillRect(0, 0, canvas.width, canvas.height);
-                setHistory([]);
-                setHistoryIndex(-1);
+                
+                // Restore previous drawing if any
+                if (currentDrawing) {
+                    const img = new Image();
+                    img.onload = () => {
+                        context.drawImage(img, 0, 0, canvas.width, canvas.height);
+                    };
+                    img.src = currentDrawing;
+                } else {
+                    // Initialize history if this is first load
+                    setHistory([]);
+                    setHistoryIndex(-1);
+                }
             }
         }
-      
-};
+    };
 
     const saveCanvasState = useCallback(() => {
         const canvas = canvasRef.current;
@@ -57,14 +80,85 @@ export default function DrawingCanvas() {
         }
     }, [history, historyIndex]);
 
+    // Handle native touch events for drawing
+    useEffect(() => {
+        const canvas = canvasRef.current;
+        if (!canvas) return;
+        
+        // Native touch event handlers (these will override React's passive listeners)
+        const handleTouchStart = (e: TouchEvent) => {
+            e.preventDefault();
+            if (!canvas) return;
+            const context = canvas.getContext('2d');
+            if (!context) return;
+            
+            const rect = canvas.getBoundingClientRect();
+            const x = e.touches[0].clientX - rect.left;
+            const y = e.touches[0].clientY - rect.top;
+            
+            context.beginPath();
+            context.moveTo(x, y);
+            context.strokeStyle = tool === 'eraser' ? 'white' : color;
+            context.lineWidth = brushSize;
+            context.lineCap = 'round';
+            context.lineJoin = 'round';
+            setIsDrawing(true);
+        };
+        
+        const handleTouchMove = (e: TouchEvent) => {
+            e.preventDefault();
+            if (!isDrawing || !canvas) return;
+            
+            const context = canvas.getContext('2d');
+            if (!context) return;
+            
+            const rect = canvas.getBoundingClientRect();
+            const x = e.touches[0].clientX - rect.left;
+            const y = e.touches[0].clientY - rect.top;
+            
+            context.lineTo(x, y);
+            context.stroke();
+        };
+        
+        const handleTouchEnd = (e: TouchEvent) => {
+            e.preventDefault();
+            if (isDrawing) {
+                setIsDrawing(false);
+                saveCanvasState();
+            }
+        };
+        
+        // Add event listeners with { passive: false } to ensure preventDefault works
+        canvas.addEventListener('touchstart', handleTouchStart, { passive: false });
+        canvas.addEventListener('touchmove', handleTouchMove, { passive: false });
+        canvas.addEventListener('touchend', handleTouchEnd, { passive: false });
+        
+        return () => {
+            // Clean up
+            canvas.removeEventListener('touchstart', handleTouchStart);
+            canvas.removeEventListener('touchmove', handleTouchMove);
+            canvas.removeEventListener('touchend', handleTouchEnd);
+        };
+    }, [isDrawing, tool, color, brushSize, saveCanvasState]);
+
+    const getCoordinates = (e: React.MouseEvent<HTMLCanvasElement>) => {
+        const canvas = canvasRef.current;
+        if (!canvas) return { x: 0, y: 0 };
+        const rect = canvas.getBoundingClientRect();
+        return {
+            x: e.clientX - rect.left,
+            y: e.clientY - rect.top
+        };
+    };
+    
+    // Mouse events only - touch is handled separately with native events
     const startDrawing = (e: React.MouseEvent<HTMLCanvasElement>) => {
         const canvas = canvasRef.current;
         if (!canvas) return;
         const context = canvas.getContext('2d');
         if (!context) return;
-        const rect = canvas.getBoundingClientRect();
-        const x = e.clientX - rect.left;
-        const y = e.clientY - rect.top;
+
+        const { x, y } = getCoordinates(e);
         context.beginPath();
         context.moveTo(x, y);
         context.strokeStyle = tool === 'eraser' ? 'white' : color;
@@ -80,9 +174,7 @@ export default function DrawingCanvas() {
         if (!canvas) return;
         const context = canvas.getContext('2d');
         if (!context) return;
-        const rect = canvas.getBoundingClientRect();
-        const x = e.clientX - rect.left;
-        const y = e.clientY - rect.top;
+        const { x, y } = getCoordinates(e);
         context.lineTo(x, y);
         context.stroke();
     };
@@ -143,6 +235,7 @@ export default function DrawingCanvas() {
     const resetCanvas = () => {
         initializeCanvas();
     };
+    
     const handleCalculate = async () => {
 
         const canvas = canvasRef.current;
@@ -239,30 +332,55 @@ export default function DrawingCanvas() {
         }
     };
     
-      
-
     return (
-        <div className="relative">
-            <div className="absolute top-0 left-0 right-0 z-10 bg-white/80 p-2 flex items-center space-x-4">
-                <ToggleGroup type="single" value={tool} onValueChange={(value) => setTool(value as 'pencil' | 'eraser')}>
+        <div className="flex flex-col h-screen" ref={containerRef}>
+             <div className="sticky top-0 left-0 right-0 z-10 bg-white/80 p-2 flex flex-wrap items-center gap-2">
+                <ToggleGroup type="single" value={tool} onValueChange={(value) => value && setTool(value as 'pencil' | 'eraser')}>
                     <ToggleGroupItem value="pencil"><Pencil className="h-4 w-4" /></ToggleGroupItem>
                     <ToggleGroupItem value="eraser"><Eraser className="h-4 w-4" /></ToggleGroupItem>
                 </ToggleGroup>
+                
                 <input type="color" value={color} onChange={(e) => setColor(e.target.value)} className="h-8 w-8 p-0 border-none" />
-                <div className="flex items-center space-x-2">
-                    <span>Brush Size:</span>
-                    <Slider defaultValue={[brushSize]} max={50} step={1} onValueChange={(value) => setBrushSize(value[0])} />
+                
+                <div className="flex items-center gap-2">
+                    <span className="text-sm">Size:</span>
+                    <Slider defaultValue={[brushSize]} max={50} step={1} onValueChange={(value) => setBrushSize(value[0])} className="w-24" />
+                    <span className="text-xs">{brushSize}px</span>
                 </div>
-                <div className="flex space-x-2">
-                    <Button variant="outline" size="icon" onClick={handleUndo} disabled={historyIndex <= 0}><Undo className="h-4 w-4" /></Button>
-                    <Button variant="outline" size="icon" onClick={handleRedo} disabled={historyIndex >= history.length - 1}><Redo className="h-4 w-4" /></Button>
-                    <Button variant="destructive" size="icon" onClick={clearCanvas}><Trash2 className="h-4 w-4" /></Button>
-                    <Button variant="secondary" size="icon" onClick={resetCanvas}><RefreshCcw className="h-4 w-4" /></Button>
-                    <Button variant="default" size="icon" onClick={handleCalculate}><Calculator className="h-4 w-4" /></Button>
+                
+                <div className="flex gap-2">
+                    <Button variant="outline" size="icon" onClick={handleUndo} disabled={historyIndex <= 0}>
+                        <Undo className="h-4 w-4" />
+                    </Button>
+                    <Button variant="outline" size="icon" onClick={handleRedo} disabled={historyIndex >= history.length - 1}>
+                        <Redo className="h-4 w-4" />
+                    </Button>
+                    <Button variant="destructive" size="icon" onClick={clearCanvas}>
+                        <Trash2 className="h-4 w-4" />
+                    </Button>
+                    <Button variant="secondary" size="icon" onClick={resetCanvas}>
+                        <RefreshCcw className="h-4 w-4" />
+                    </Button>
+                    <Button variant="default" size="icon" onClick={handleCalculate}>
+                        <Calculator className="h-4 w-4" />
+                    </Button>
                 </div>
             </div>
-            <canvas ref={canvasRef} className="absolute top-12 left-0 right-0 bottom-0" onMouseDown={startDrawing} onMouseMove={draw} onMouseUp={stopDrawing} onMouseLeave={stopDrawing} />
-</div>
-
+            
+            <div className="flex-grow relative overflow-hidden">
+                <canvas
+                    ref={canvasRef}
+                    onMouseDown={startDrawing}
+                    onMouseMove={draw}
+                    onMouseUp={stopDrawing}
+                    onMouseOut={stopDrawing}
+                    className="w-full h-full touch-none"
+                    style={{ 
+                        touchAction: "none", // Prevents scrolling on touch devices
+                        display: "block" 
+                    }}
+                />
+            </div>
+        </div>
     );
 }

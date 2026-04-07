@@ -1,385 +1,550 @@
-import React, { useRef, useState, useEffect, useCallback } from 'react';
-import { Button } from "@/components/ui/button";
-import { Slider } from "@/components/ui/slider";
-import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
-import { Pencil, Eraser, Undo, Redo, Trash2, Calculator, RefreshCcw } from 'lucide-react';
+import { useRef, useState, useCallback, useEffect } from 'react';
+import { Calculator, Undo, Redo, Trash2, HelpCircle } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import Toolbar, { Tool } from '@/components/Toolbar';
+import FabricCanvas from '@/components/FabricCanvas';
+import ErrorDisplay from '@/components/ErrorDisplay';
+import HelpPanel from '@/components/HelpPanel';
+import ResultDisplay from '@/components/ResultDisplay';
+import { getApiUrl, config } from '@/config/api';
+import { evaluate } from 'mathjs';
+
 
 export default function DrawingCanvas() {
-    const canvasRef = useRef<HTMLCanvasElement>(null);
-    const containerRef = useRef<HTMLDivElement>(null);
-    const [isDrawing, setIsDrawing] = useState(false);
-    const [tool, setTool] = useState<'pencil' | 'eraser'| 'default'>('pencil');
-    const [color, setColor] = useState('#000000');
-    const [brushSize, setBrushSize] = useState(5);
-  
-    // Canvas history for undo/redo
+    const [activeTool, setActiveTool] = useState<Tool>('pencil');
+    const [error, setError] = useState<{ expr?: string; result?: string } | null>(null);
+    const [isLoading, setIsLoading] = useState(false);
+    const [showHelp, setShowHelp] = useState(false);
+    const [dictOfVars, setDictOfVars] = useState<{ [key: string]: string }>({});
+    const [result, setResult] = useState<{ 
+        expression: string; 
+        answer: string; 
+        steps?: string;
+        confidence?: string;
+        explanation?: string;
+    } | null>(null);
+    const [results, setResults] = useState<Array<{
+        expr: string;
+        result: string | number;
+        assign: boolean;
+        error?: string;
+    }> | null>(null);
+    const [hasDrawing, setHasDrawing] = useState(false);
     const [history, setHistory] = useState<string[]>([]);
-    const [historyIndex, setHistoryIndex] = useState(-1);
+    const [redoStack, setRedoStack] = useState<string[]>([]);
+    const canvasRef = useRef<any>(null);
 
-    // Handle window resize
-    useEffect(() => {
-        const handleResize = () => {
-            initializeCanvas();
-        };
-
-        window.addEventListener('resize', handleResize);
-        return () => {
-            window.removeEventListener('resize', handleResize);
-        };
-    }, []);
-
-    // Initialize canvas on mount
-    useEffect(() => {
-        initializeCanvas();
-    }, []);
-
-    const initializeCanvas = () => {
-        const canvas = canvasRef.current;
-        const container = containerRef.current;
-        
-        if (canvas && container) {
-            const context = canvas.getContext('2d');
-            if (context) {
-                // Save the current drawing if any
-                let currentDrawing: string | null = null;
-                if (canvas.width > 0 && canvas.height > 0) {
-                    currentDrawing = canvas.toDataURL();
-                }
-                
-                // Set canvas size to fill container
-                canvas.width = container.clientWidth;
-                canvas.height = window.innerHeight - 100; // Leave space for the toolbar
-                
-                // Fill with white background
-                context.fillStyle = 'white';
-                context.fillRect(0, 0, canvas.width, canvas.height);
-                
-                // Restore previous drawing if any
-                if (currentDrawing) {
-                    const img = new Image();
-                    img.onload = () => {
-                        context.drawImage(img, 0, 0, canvas.width, canvas.height);
-                    };
-                    img.src = currentDrawing;
-                } else {
-                    // Initialize history if this is first load
-                    setHistory([]);
-                    setHistoryIndex(-1);
-                }
-            }
-        }
+    const handleToolChange = (tool: Tool) => {
+        setActiveTool(tool);
     };
 
+    const handleUndo = useCallback(() => {
+        if (history.length <= 1) return; // Keep at least one state
+
+        const canvas = canvasRef.current;
+        if (!canvas) return;
+
+        const newHistory = [...history];
+        const lastState = newHistory.pop();
+
+        if (!lastState) return;
+
+        setRedoStack((prev) => [...prev, lastState]);
+        setHistory(newHistory);
+
+        const prevState = newHistory[newHistory.length - 1];
+        
+        if (canvas.loadFromDataUrl) {
+            canvas.loadFromDataUrl(prevState);
+        } else if (canvas.setBackgroundImage) {
+            const img = new Image();
+            img.src = prevState;
+            img.onload = () => {
+                canvas.clear();
+                canvas.setBackgroundImage(img, canvas.renderAll.bind(canvas));
+            };
+        }
+    }, [history]);
+
+    const handleRedo = useCallback(() => {
+        if (redoStack.length === 0) return;
+
+        const canvas = canvasRef.current;
+        if (!canvas) return;
+
+        const newRedo = [...redoStack];
+        const state = newRedo.pop();
+
+        if (!state) return;
+
+        setRedoStack(newRedo);
+        setHistory((prev) => [...prev, state]);
+
+        if (canvas.loadFromDataUrl) {
+            canvas.loadFromDataUrl(state);
+        } else if (canvas.setBackgroundImage) {
+            const img = new Image();
+            img.src = state;
+            img.onload = () => {
+                canvas.clear();
+                canvas.setBackgroundImage(img, canvas.renderAll.bind(canvas));
+            };
+        }
+    }, [redoStack]);
+
+    const handleClear = useCallback(() => {
+        if (canvasRef.current && canvasRef.current.clear) {
+            canvasRef.current.clear();
+        }
+        // Also clear variables and results
+        setDictOfVars({});
+        setResult(null);
+        setResults(null);
+        setHasDrawing(false); // Reset drawing state
+        
+        // Save blank state to history
+        const canvas = canvasRef.current;
+        if (canvas) {
+            setTimeout(() => {
+                setHistory([canvas.toDataURL()]);
+                setRedoStack([]);
+            }, 50);
+        }
+    }, []);
+
+    // 🔹 Save canvas state after drawing
     const saveCanvasState = useCallback(() => {
         const canvas = canvasRef.current;
-        if (canvas) {
-            const dataUrl = canvas.toDataURL();
-            const newHistory = history.slice(0, historyIndex + 1);
-            setHistory([...newHistory, dataUrl]);
-            setHistoryIndex(newHistory.length);
-        }
-    }, [history, historyIndex]);
-
-    // Handle native touch events for drawing
-    useEffect(() => {
-        const canvas = canvasRef.current;
         if (!canvas) return;
-        
-        // Native touch event handlers (these will override React's passive listeners)
-        const handleTouchStart = (e: TouchEvent) => {
-            e.preventDefault();
-            if (!canvas) return;
-            const context = canvas.getContext('2d');
-            if (!context) return;
+
+        const dataUrl = canvas.toDataURL();
+        setHistory((prev) => [...prev, dataUrl]);
+        setRedoStack([]); // clear redo after new draw
+        setHasDrawing(true); // Mark that user has drawn something
+    }, []);
+
+    // 🔹 Variable substitute function
+    function substituteVariables(expr: string, dict: { [key: string]: string }) {
+        let updated = expr;
+
+        Object.keys(dict).forEach((key) => {
+            const regex = new RegExp(`\\b${key}\\b`, "g");
+            updated = updated.replace(regex, dict[key]);
+        });
+
+        // convert 2x → 2*x
+        updated = updated.replace(/(\d)([a-zA-Z])/g, "$1*$2");
+
+        return updated;
+    }
+
+    // 🔹 Expression evaluation function
+    function evaluateExpression(expr: string) {
+        try {
+            return evaluate(expr).toString();
+        } catch {
+            return "Error";
+        }
+    }
+
+    const showError = (expr: string, result: string) => {
+        setError({ expr, result });
+        setTimeout(() => setError(null), 5000); // Auto-hide after 5 seconds
+    };
+
+    const displayResultOnCanvas = (data: { 
+        expr: string; 
+        result: string; 
+        steps?: string; 
+        confidence?: string; 
+        explanation?: string;
+        type?: string 
+    }) => {
+        if (canvasRef.current && canvasRef.current.addResultText) {
+            console.log("🎨 Adding rich result to canvas:", data);
             
-            const rect = canvas.getBoundingClientRect();
-            const x = e.touches[0].clientX - rect.left;
-            const y = e.touches[0].clientY - rect.top;
+            // Create rich display text
+            let displayText = `${data.expr} = ${data.result}`;
             
-            context.beginPath();
-            context.moveTo(x, y);
-            context.strokeStyle = tool === 'eraser' ? 'white' : color;
-            context.lineWidth = brushSize;
-            context.lineCap = 'round';
-            context.lineJoin = 'round';
-            setIsDrawing(true);
-        };
-        
-        const handleTouchMove = (e: TouchEvent) => {
-            e.preventDefault();
-            if (!isDrawing || !canvas) return;
-            
-            const context = canvas.getContext('2d');
-            if (!context) return;
-            
-            const rect = canvas.getBoundingClientRect();
-            const x = e.touches[0].clientX - rect.left;
-            const y = e.touches[0].clientY - rect.top;
-            
-            context.lineTo(x, y);
-            context.stroke();
-        };
-        
-        const handleTouchEnd = (e: TouchEvent) => {
-            e.preventDefault();
-            if (isDrawing) {
-                setIsDrawing(false);
-                saveCanvasState();
+            if (data.steps) {
+                displayText += `\n📝 Steps: ${data.steps}`;
             }
-        };
-        
-        // Add event listeners with { passive: false } to ensure preventDefault works
-        canvas.addEventListener('touchstart', handleTouchStart, { passive: false });
-        canvas.addEventListener('touchmove', handleTouchMove, { passive: false });
-        canvas.addEventListener('touchend', handleTouchEnd, { passive: false });
-        
-        return () => {
-            // Clean up
-            canvas.removeEventListener('touchstart', handleTouchStart);
-            canvas.removeEventListener('touchmove', handleTouchMove);
-            canvas.removeEventListener('touchend', handleTouchEnd);
-        };
-    }, [isDrawing, tool, color, brushSize, saveCanvasState]);
-
-    const getCoordinates = (e: React.MouseEvent<HTMLCanvasElement>) => {
-        const canvas = canvasRef.current;
-        if (!canvas) return { x: 0, y: 0 };
-        const rect = canvas.getBoundingClientRect();
-        return {
-            x: e.clientX - rect.left,
-            y: e.clientY - rect.top
-        };
-    };
-    
-    // Mouse events only - touch is handled separately with native events
-    const startDrawing = (e: React.MouseEvent<HTMLCanvasElement>) => {
-        const canvas = canvasRef.current;
-        if (!canvas) return;
-        const context = canvas.getContext('2d');
-        if (!context) return;
-
-        const { x, y } = getCoordinates(e);
-        context.beginPath();
-        context.moveTo(x, y);
-        context.strokeStyle = tool === 'eraser' ? 'white' : color;
-        context.lineWidth = brushSize;
-        context.lineCap = 'round';
-        context.lineJoin = 'round';
-        setIsDrawing(true);
-    };
-
-    const draw = (e: React.MouseEvent<HTMLCanvasElement>) => {
-        if (!isDrawing) return;
-        const canvas = canvasRef.current;
-        if (!canvas) return;
-        const context = canvas.getContext('2d');
-        if (!context) return;
-        const { x, y } = getCoordinates(e);
-        context.lineTo(x, y);
-        context.stroke();
-    };
-
-    const stopDrawing = () => {
-        if (isDrawing) {
-            setIsDrawing(false);
-            saveCanvasState();
+            
+            if (data.confidence) {
+                const confidenceEmoji = data.confidence === 'high' ? '🟢' : 
+                                     data.confidence === 'medium' ? '🟡' : '🔴';
+                displayText += `\n${confidenceEmoji} Confidence: ${data.confidence}`;
+            }
+            
+            if (data.explanation) {
+                displayText += `\n💡 ${data.explanation}`;
+            }
+            
+            canvasRef.current.addResultText({
+                ...data,
+                displayText
+            });
+        } else {
+            console.error("❌ canvasRef.current.addResultText not found!");
         }
     };
 
-    const handleUndo = () => {
-        if (historyIndex > 0) {
-            const newIndex = historyIndex - 1;
-            const canvas = canvasRef.current;
-            if (canvas) {
-                const context = canvas.getContext('2d');
-                const img = new Image();
-                img.onload = () => {
-                    context?.clearRect(0, 0, canvas.width, canvas.height);
-                    context?.drawImage(img, 0, 0);
-                };
-                img.src = history[newIndex];
-                setHistoryIndex(newIndex);
-            }
-        }
-    };
-
-    const handleRedo = () => {
-        if (historyIndex < history.length - 1) {
-            const newIndex = historyIndex + 1;
-            const canvas = canvasRef.current;
-            if (canvas) {
-                const context = canvas.getContext('2d');
-                const img = new Image();
-                img.onload = () => {
-                    context?.clearRect(0, 0, canvas.width, canvas.height);
-                    context?.drawImage(img, 0, 0);
-                };
-                img.src = history[newIndex];
-                setHistoryIndex(newIndex);
-            }
-        }
-    };
-
-    const clearCanvas = () => {
-        const canvas = canvasRef.current;
-        if (canvas) {
-            const context = canvas.getContext('2d');
-            if (context) {
-                context.fillStyle = 'white';
-                context.fillRect(0, 0, canvas.width, canvas.height);
-                saveCanvasState();
-            }
-        }
-    };
-
-    const resetCanvas = () => {
-        initializeCanvas();
-    };
-    
     const handleCalculate = async () => {
-
         const canvas = canvasRef.current;
-        if (!canvas) {
-            console.error("❌ Canvas not found!");
-            alert("Canvas not available. Please try again.");
-            return;
-        }
-    
-        console.log("📤 Sending canvas image to server...");
-        const dataUrl = canvas.toDataURL("image/png");
-    
-        try {  // cors ka issue hai be
-            // Step 1: Upload image
-            const uploadResponse = await fetch("https://backend-cal.vercel.app/image", {
-                method: "POST",
-                mode: "cors",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ image: dataUrl, dictOfVars: {} })
-            });
-    
-            if (!uploadResponse.ok) {
-                throw new Error(`❌ Image upload failed: ${uploadResponse.status}`);
-            }
-    
-            const uploadResult = await uploadResponse.json();
-            const imageId = uploadResult.imageId;
-            console.log("✅ Image stored with ID:", imageId);
-    
-            // Step 2: Analyze stored image
-            const analyzeResponse = await fetch("https://backend-cal.vercel.app/calculate", {
-                method: "POST",
-                mode: "cors",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ imageId })
-            });
-    
-            if (!analyzeResponse.ok) {
-                throw new Error(`❌ Calculation failed: ${analyzeResponse.status}`);
-            }
-    
-            const analysisResult = await analyzeResponse.json();
-            console.log("✅ Analysis Result:", analysisResult);
-    
-            // Get canvas context
 
-            const ctx = canvas.getContext("2d");
-            if (!ctx) {
-                console.error("❌ Could not get canvas context.");
-                alert("Canvas context is unavailable.");
-                return;
-            }
-    
-            function displayResult(ctx: CanvasRenderingContext2D, text: string) {
-                const canvas = canvasRef.current;
-                if (!canvas) {
-                    console.error("Canvas is null");
-                    return;
-                }
-                
-                const newCtx  = canvas.getContext("2d");
-                if (!newCtx) {
-                    console.error("Canvas context is null");
-                    return;
-                }
+        if (!canvas) return;
 
+        setIsLoading(true);
+        setError(null);
+
+        try {
+            const response = await fetch(getApiUrl('/calculate'), {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    image: canvas.toDataURL("image/png"),
+                    dict_of_vars: dictOfVars,
+                }),
+                signal: AbortSignal.timeout(config.apiTimeout)
+            });
+
+            if (!response.ok) {
+                throw new Error(`HTTP error! status: ${response.status}`);
+            }
+
+            const responseData = await response.json();
+            console.log("✅ Backend response:", responseData);
+            
+            // 🔹 Handle different response formats
+            let resp: any[] = [];
+            if (Array.isArray(responseData)) {
+                resp = responseData;
+            } else if (responseData.result && Array.isArray(responseData.result)) {
+                resp = responseData.result;
+            }
+
+            let updatedVars = { ...dictOfVars };
+            
+            // Convert backend response to ResultDisplay format
+            const displayResults: Array<{
+                expr: string;
+                result: string | number;
+                assign: boolean;
+                error?: string;
+                type?: string;
+                concept?: string;
+                steps?: string;
+                confidence?: string;
+                explanation?: string;
+            }> = resp.map((item) => {
+                if (item.type === 'math' && item.expr && item.result) {
+                    const isAssignment = item.expr.includes('=') && !item.expr.includes('+') && !item.expr.includes('-') && !item.expr.includes('*') && !item.expr.includes('/');
+                    return {
+                        expr: item.expr,
+                        result: item.result,
+                        assign: isAssignment,
+                        error: item.error,
+                        type: item.type,
+                        concept: item.concept,
+                        steps: item.steps,
+                        confidence: item.confidence,
+                        explanation: item.explanation
+                    };
+                }
+                // Handle legacy format
+                else if (item.expr && item.result) {
+                    return {
+                        expr: item.expr,
+                        result: item.result,
+                        assign: item.assign || false,
+                        error: item.error,
+                        type: item.type || 'math',
+                        concept: item.concept,
+                        steps: item.steps,
+                        confidence: item.confidence,
+                        explanation: item.explanation
+                    };
+                }
+                return null;
+            }).filter((item): item is NonNullable<typeof item> => Boolean(item));
+            
+            setResults(displayResults);
+
+            // 🔹 Process each response item
+            resp.forEach((item) => {
+                console.log("🎯 Processing item:", item);
                 
-                ctx.clearRect(0, 0, canvas.width, canvas.height);
-                ctx.font = "20px Arial";
-                ctx.fillStyle = "black";
-    
-                // Split text for multi-line display
-                const lines = text.split("\n");
-                let y = 50;
-                lines.forEach((line) => {
-                    ctx.fillText(line, 20, y);
-                    y += 30; // Line spacing
-                });
-            }
-    
-            if (Array.isArray(analysisResult.result) && analysisResult.result.length > 0) {
-                const resultsText = analysisResult.result
-                    .map((entry: { expr: string; result: string }) => `Expression: ${entry.expr}\nResult: ${entry.result}`)
-                    .join("\n\n");
-    
-                // Call function to display results
-                displayResult(ctx, resultsText);
-            } else {
-                alert("⚠️ No valid calculation result. Try again!");
-            }
-        } catch (error) {
-            console.error("❌ Error:", error);
-            alert("Error occurred while calculating. Check console.");
+                // Handle new rich response format
+                if (item.type === 'math' && item.expr && item.result) {
+                    // Check if this is a variable assignment (e.g., "x = 5")
+                    const isAssignment = item.expr.includes('=') && !item.expr.includes('+') && !item.expr.includes('-') && !item.expr.includes('*') && !item.expr.includes('/');
+                    
+                    if (isAssignment) {
+                        // Extract variable name and value
+                        const parts = item.expr.split('=');
+                        if (parts.length === 2) {
+                            const varName = parts[0].trim();
+                            const varValue = parts[1].trim();
+                            updatedVars[varName] = varValue;
+                            console.log(`📝 Variable stored: ${varName} = ${varValue}`);
+                        }
+                    } else {
+                        // This is an expression to evaluate
+                        const finalExpr = substituteVariables(item.expr, updatedVars);
+                        const finalAnswer = item.result || evaluateExpression(finalExpr);
+
+                        setResult({
+                            expression: finalExpr,
+                            answer: finalAnswer,
+                            steps: item.steps,
+                            confidence: item.confidence,
+                            explanation: item.explanation,
+                        });
+
+                        console.log(`🧮 Expression solved: ${finalExpr} = ${finalAnswer}`);
+                        console.log(`📝 Full result object:`, {
+                            expression: finalExpr,
+                            answer: finalAnswer,
+                            steps: item.steps,
+                            confidence: item.confidence,
+                            explanation: item.explanation,
+                        });
+
+                        // Display rich result on canvas
+                        displayResultOnCanvas({
+                            expr: item.expr,
+                            result: finalAnswer,
+                            steps: item.steps,
+                            confidence: item.confidence,
+                            explanation: item.explanation,
+                            type: item.type
+                        });
+                    }
+                }
+                // Handle legacy format for backward compatibility
+                else if (item.expr && item.result) {
+                    const isAssignment = item.assign === true;
+                    
+                    if (isAssignment) {
+                        updatedVars[item.expr] = item.result;
+                    } else {
+                        const finalExpr = substituteVariables(item.expr, updatedVars);
+                        const finalAnswer = evaluateExpression(finalExpr);
+
+                        setResult({
+                            expression: finalExpr,
+                            answer: finalAnswer,
+                        });
+
+                        displayResultOnCanvas({
+                            expr: finalExpr,
+                            result: finalAnswer,
+                            type: 'Math'
+                        });
+                    }
+                }
+            });
+
+            setDictOfVars(updatedVars);
+
+        } catch (error: any) {
+            showError("System Error", error.message || "An unexpected error occurred");
+        } finally {
+            setIsLoading(false);
         }
     };
-    
+
+    // Debug logging for explanation
+    useEffect(() => {
+        if (result?.explanation) {
+            console.log("🔍 Result explanation:", result.explanation);
+        }
+    }, [result?.explanation]);
+
     return (
-        <div className="flex flex-col h-screen" ref={containerRef}>
-             <div className="sticky top-0 left-0 right-0 z-10 bg-white/80 p-2 flex flex-wrap items-center gap-2">
-                <ToggleGroup type="single" value={tool} onValueChange={(value) => value && setTool(value as 'pencil' | 'eraser')}>
-                    <ToggleGroupItem value="pencil"><Pencil className="h-4 w-4" /></ToggleGroupItem>
-                    <ToggleGroupItem value="eraser"><Eraser className="h-4 w-4" /></ToggleGroupItem>
-                </ToggleGroup>
-                
-                <input type="color" value={color} onChange={(e) => setColor(e.target.value)} className="h-8 w-8 p-0 border-none" />
-                
-                <div className="flex items-center gap-2">
-                    <span className="text-sm">Size:</span>
-                    <Slider defaultValue={[brushSize]} max={50} step={1} onValueChange={(value) => setBrushSize(value[0])} className="w-24" />
-                    <span className="text-xs">{brushSize}px</span>
+        <div className="relative w-full h-screen overflow-hidden">
+            {/* Loading Overlay */}
+            {isLoading && (
+                <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+                    <div className="bg-white rounded-lg p-6 flex items-center space-x-3">
+                        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
+                        <span className="text-lg font-medium">Calculating...</span>
+                    </div>
                 </div>
-                
-                <div className="flex gap-2">
-                    <Button variant="outline" size="icon" onClick={handleUndo} disabled={historyIndex <= 0}>
-                        <Undo className="h-4 w-4" />
-                    </Button>
-                    <Button variant="outline" size="icon" onClick={handleRedo} disabled={historyIndex >= history.length - 1}>
-                        <Redo className="h-4 w-4" />
-                    </Button>
-                    <Button variant="destructive" size="icon" onClick={clearCanvas}>
-                        <Trash2 className="h-4 w-4" />
-                    </Button>
-                    <Button variant="secondary" size="icon" onClick={resetCanvas}>
-                        <RefreshCcw className="h-4 w-4" />
-                    </Button>
-                    <Button variant="default" size="icon" onClick={handleCalculate}>
-                        <Calculator className="h-4 w-4" />
-                    </Button>
-                </div>
-            </div>
+            )}
+
+            {/* Error Display */}
+            <ErrorDisplay
+                error={error}
+                onClose={() => setError(null)}
+            />
+
+            {/* Results Display */}
+            <ResultDisplay
+                results={results}
+                isAnalyzing={isLoading}
+                showReady={hasDrawing && !isLoading && !results}
+                onClose={() => setResults(null)}
+            />
             
-            <div className="flex-grow relative overflow-hidden">
-                <canvas
-                    ref={canvasRef}
-                    onMouseDown={startDrawing}
-                    onMouseMove={draw}
-                    onMouseUp={stopDrawing}
-                    onMouseOut={stopDrawing}
-                    className="w-full h-full touch-none"
-                    style={{ 
-                        touchAction: "none", // Prevents scrolling on touch devices
-                        display: "block" 
-                    }}
+            {/* Always show empty state when no drawing */}
+            {!hasDrawing && !isLoading && !results && (
+                <ResultDisplay
+                    results={[]}
+                    isAnalyzing={false}
+                    showReady={false}
+                    onClose={() => {}}
                 />
+            )}
+
+            {/* Debug Panel - Remove in production */}
+            {config.enableDebug && result && (
+                <div className="fixed top-4 left-4 bg-white p-4 rounded-lg shadow-lg z-40 max-w-sm">
+                    <h3 className="font-bold text-sm mb-2">🔍 Debug Info</h3>
+                    <div className="text-xs space-y-1">
+                        <div><strong>Expression:</strong> {result.expression}</div>
+                        <div><strong>Answer:</strong> {result.answer}</div>
+                        <div><strong>Variables:</strong> {JSON.stringify(dictOfVars)}</div>
+                    </div>
+                </div>
+            )}
+
+
+            {/* Help Panel */}
+            {showHelp && <HelpPanel onClose={() => setShowHelp(false)} />}
+
+            {/* Navigation Bar */}
+            {/* <Navbar /> */}
+
+            {/* Main Content Area */}
+            <div className="flex w-full h-full">
+                {/* Left Side - Canvas */}
+                <div className="flex-1 relative">
+                    <FabricCanvas
+                        activeTool={activeTool}
+                        onCanvasReady={(canvas: any) => {
+                            canvasRef.current = canvas;
+                            
+                            // Save initial state after canvas is ready
+                            setTimeout(() => {
+                                if (canvas.toDataURL) {
+                                    setHistory([canvas.toDataURL()]);
+                                }
+                            }, 200);
+                        }}
+                        onUndo={handleUndo}
+                        onRedo={handleRedo}
+                        onStateSave={saveCanvasState}
+                    />
+
+                    {/* Toolbar */}
+                    <Toolbar
+                        activeTool={activeTool}
+                        onToolChange={handleToolChange}
+                        onUndo={handleUndo}
+                        onRedo={handleRedo}
+                        onClear={handleClear}
+                        canUndo={true}
+                        canRedo={true}
+                    />
+
+                    {/* Floating Action Buttons */}
+                    <div className="fixed bottom-6 right-6 flex flex-col gap-2">
+                        <Button
+                            onClick={() => setShowHelp(true)}
+                            variant="outline"
+                            size="icon"
+                            className="bg-blue-100 shadow-lg hover:shadow-xl transition-all duration-200"
+                            title="What can I solve?"
+                        >
+                            <HelpCircle size={18} />
+                        </Button>
+
+                        <Button
+                            onClick={handleUndo}
+                            variant="outline"
+                            size="icon"
+                            className="bg-white shadow-lg hover:shadow-xl transition-all duration-200"
+                        >
+                            <Undo size={18} />
+                        </Button>
+
+                        <Button
+                            onClick={handleClear}
+                            variant="outline"
+                            size="icon"
+                            className="bg-white shadow-lg hover:shadow-xl transition-all duration-200 hover:bg-red-50"
+                            title="Clear Canvas"
+                        >
+                            <Trash2 size={18} />
+                        </Button>
+
+                        <Button
+                            onClick={handleCalculate}
+                            disabled={isLoading}
+                            variant="default"
+                            size="icon"
+                            className="bg-blue-600 text-white shadow-lg hover:shadow-xl hover:bg-blue-700 transition-all duration-200"
+                            title="Analyze Drawing"
+                        >
+                            <Calculator size={18} />
+                        </Button>
+                    </div>
+                </div>
+
+                {/* Right Side - Analysis Output Column */}
+                <div className="w-96 bg-gray-50 border-l border-gray-200 p-6 overflow-y-auto">
+                    <div className="bg-white rounded-lg shadow-lg">
+                        <div className="border-b border-gray-200 px-6 py-4">
+                            <h2 className="text-xl font-bold text-gray-800">Results</h2>
+                            <p className="text-sm text-gray-600 mt-1">Analysis and solutions</p>
+                        </div>
+                        
+                        <div className="p-6">
+                            {result ? (
+                                <div className="space-y-4">
+                                    <div className="font-mono bg-gray-100 p-4 rounded-lg text-base">
+                                        {result.expression} = {result.answer}
+                                    </div>
+                                    {result.steps && (
+                                        <div>
+                                            <strong className="text-gray-700">📝 Steps:</strong>
+                                            <div className="text-sm text-gray-600 mt-2 bg-blue-50 p-3 rounded">{result.steps}</div>
+                                        </div>
+                                    )}
+                                    {result.explanation && (
+                                        <div>
+                                            <strong className="text-gray-700">💡 Explanation:</strong>
+                                            <div className="text-sm text-gray-700 mt-2 italic bg-yellow-50 p-3 rounded">{result.explanation}</div>
+                                        </div>
+                                    )}
+                                    {result.confidence && (
+                                        <div className="flex items-center gap-2">
+                                            <strong className="text-gray-700">Confidence:</strong>
+                                            <span className={`px-3 py-1 rounded-full text-sm font-medium ${
+                                                result.confidence === 'high' ? 'bg-green-100 text-green-800' :
+                                                result.confidence === 'medium' ? 'bg-yellow-100 text-yellow-800' :
+                                                'bg-red-100 text-red-800'
+                                            }`}>
+                                                {result.confidence}
+                                            </span>
+                                        </div>
+                                    )}
+                                </div>
+                            ) : (
+                                <div className="flex flex-col items-center justify-center py-12 text-gray-500">
+                                    <div className="bg-gray-200 p-6 rounded-full mb-4">
+                                        <Calculator size={48} className="text-gray-400" />
+                                    </div>
+                                    <p className="text-lg font-medium mb-2">Start drawing an equation</p>
+                                    <p className="text-sm text-center">Draw a mathematical expression and click the calculator button to see analysis results here</p>
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                </div>
             </div>
         </div>
     );

@@ -9,6 +9,18 @@ export default defineConfig({
   
     server: {
       allowedHosts: ['5b96-103-99-197-236.ngrok-free.app'],
+      proxy: {
+        '/image': {
+          target: 'http://localhost:5000',
+          changeOrigin: true,
+          secure: false
+        },
+        '/calculate': {
+          target: 'http://localhost:5000',
+          changeOrigin: true,
+          secure: false
+        }
+      }
     },
   plugins: [react(),],
   resolve: {
